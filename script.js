@@ -1,6 +1,10 @@
 // ==========================================
 // 0. MCTS Configuration (在这里修改参数)
 // ==========================================
+
+// Configure ONNX Runtime WASM paths to ensure version match
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
+
 const MCTS_CONFIG = {
     numSimulations: 400,  // MCTS 模拟次数 (建议: TTT=100, C4=400, Gomoku=800)
     c_puct: 1.4,          // 探索系数
