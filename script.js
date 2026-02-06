@@ -693,59 +693,104 @@ function updateAnalysis(winRate, counts) {
     uiWinRateBar.style.width = `${pct}%`;
     uiWinRateBar.className = `h-2.5 rounded-full transition-all duration-500 ${winRate > 0.5 ? 'bg-green-500' : 'bg-red-400'}`;
 
-    // Heatmap / Policy
-    // This requires mapping 'counts' back to board cells and adding overlays
-    // Clear old overlays
-    document.querySelectorAll('.heatmap-overlay').forEach(e => e.remove());
+    // Policy Visualization
+    const container = document.getElementById('policy-container');
+    container.innerHTML = '';
     
-    if (!counts) return;
+    if (!counts) {
+        container.innerHTML = '<p class="text-gray-400 text-xs">Waiting for analysis...</p>';
+        return;
+    }
 
-    // Normalize counts
-    let max = 0;
-    for(let c of counts) if(c>max) max=c;
-    if (max === 0) return;
+    const total = counts.reduce((a, b) => a + b, 0);
+    if (total === 0) return;
 
-    const board = gameEngine._getBoard(gameState, gameEngine.historyStep - 1);
-    
-    if (activeGameType === 'ttt' || activeGameType === 'gomoku') {
-        const cells = activeGameType === 'ttt' 
-            ? document.querySelectorAll('.ttt-cell') 
-            : document.querySelectorAll('.gomoku-cell');
-            
-        for(let i=0; i<counts.length; i++) {
-            if (board[i] === 0 && counts[i] > 0) {
-                const intensity = counts[i] / max;
-                if (intensity < 0.05) continue;
-                
-                const overlay = document.createElement('div');
-                overlay.className = 'heatmap-overlay';
-                overlay.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
-                overlay.style.opacity = intensity * 0.8;
-                cells[i].appendChild(overlay);
-            }
-        }
-    } else if (activeGameType === 'c4') {
-        // C4 counts are per column. We light up the bottom-most empty cell in that column?
-        // Or just the button? Let's light up the target cell.
+    if (activeGameType === 'c4') {
+        // Bar Chart for Connect 4
+        const chart = document.createElement('div');
+        chart.className = 'policy-bar-container';
+        
+        // Find max for scaling
+        const maxCount = Math.max(...counts);
+        
         for(let c=0; c<7; c++) {
-            if (counts[c] > 0) {
-                // Find target row
-                for(let r=5; r>=0; r--) {
-                    const idx = r*7+c;
-                    if (board[idx] === 0) {
-                        const cell = document.getElementById(`c4-cell-${r}-${c}`);
-                        const intensity = counts[c] / max;
-                         if (intensity < 0.05) break;
-
-                        const overlay = document.createElement('div');
-                        overlay.className = 'heatmap-overlay';
-                        overlay.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
-                        overlay.style.opacity = intensity * 0.8;
-                        cell.appendChild(overlay);
-                        break;
-                    }
-                }
+            const prob = counts[c] / total;
+            const wrapper = document.createElement('div');
+            wrapper.className = 'policy-bar-wrapper';
+            
+            const bar = document.createElement('div');
+            bar.className = 'policy-bar';
+            // Scale bar relative to highest prob for better visualization, but cap it?
+            // Actually, let's just use absolute probability height.
+            // If prob is 0.5, height is 50%.
+            bar.style.height = `${Math.max(4, prob * 100)}%`; 
+            
+            // Color logic
+            const isBest = counts[c] === maxCount && counts[c] > 0;
+            if (isBest) {
+                bar.style.backgroundColor = '#ef4444'; // Red-500 (Best)
+                bar.style.opacity = '1';
+            } else {
+                bar.style.backgroundColor = '#ef4444'; 
+                bar.style.opacity = Math.max(0.3, prob + 0.2);
             }
+            
+            const label = document.createElement('div');
+            label.className = 'policy-label';
+            // Show % only if > 0, but use non-breaking space to maintain height
+            label.innerHTML = prob > 0.01 ? (prob * 100).toFixed(0) + '%' : '&nbsp;';
+            
+            wrapper.appendChild(bar);
+            wrapper.appendChild(label);
+            chart.appendChild(wrapper);
         }
+        container.appendChild(chart);
+        
+    } else {
+        // Grid Heatmap for TTT / Gomoku
+        const size = activeGameType === 'ttt' ? 3 : 9;
+        const grid = document.createElement('div');
+        grid.className = 'policy-heatmap-grid';
+        grid.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+        
+        // Calculate cell size to fit container, maintaining aspect ratio
+        // Container has w-full min-h-[200px].
+        // Let's rely on CSS Grid + specific width/height.
+        const dim = Math.min(container.offsetWidth, container.offsetHeight || 200) - 20;
+        grid.style.width = `${dim}px`;
+        grid.style.height = `${dim}px`;
+        
+        const board = gameEngine._getBoard(gameState, gameEngine.historyStep - 1);
+        const maxCount = Math.max(...counts);
+
+        for(let i=0; i<size*size; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'policy-heatmap-cell';
+            
+            const prob = counts[i] / total;
+            
+            // Board state check
+            if (board[i] !== 0) {
+                 cell.style.backgroundColor = '#CBD5E1'; // Occupied (Slate-300)
+            } else if (counts[i] > 0) {
+                 // Red intensity
+                 // Use relative to max for better contrast
+                 const intensity = counts[i] / maxCount;
+                 cell.style.backgroundColor = `rgba(239, 68, 68, ${Math.max(0.2, intensity)})`;
+                 
+                 // Tooltip or Text
+                 if (size === 3 && prob > 0.01) {
+                     cell.innerHTML = `<span class="text-xs text-white font-bold">${(prob*100).toFixed(0)}</span>`;
+                     cell.style.display = 'flex';
+                     cell.style.alignItems = 'center';
+                     cell.style.justifyContent = 'center';
+                 }
+                 cell.title = `Prob: ${(prob*100).toFixed(1)}%`;
+            } else {
+                 cell.style.backgroundColor = '#F1F5F9'; // Empty (Slate-100)
+            }
+            grid.appendChild(cell);
+        }
+        container.appendChild(grid);
     }
 }
