@@ -452,12 +452,29 @@ async function switchGame(type) {
     let modelFile = `${type === 'ttt' ? 'tictactoe' : (type === 'c4' ? 'connect4' : 'gomoku')}.onnx`;
     
     try {
-        currentSession = await ort.InferenceSession.create(modelFile, { executionProviders: ['wasm'] });
-        console.log("Model loaded:", modelFile);
+        // Explicitly fetch first to check status and provide better diagnostics
+        const response = await fetch(modelFile);
+        if (!response.ok) {
+            throw new Error(`Fetch failed: ${response.status} ${response.statusText} for ${modelFile}`);
+        }
+        
+        const contentType = response.headers.get('content-type');
+        console.log(`Loading ${modelFile} (Size: ${response.headers.get('content-length')} bytes, Type: ${contentType})`);
+        
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength < 1000) {
+             console.warn("Warning: Model file is remarkably small. This might be a Git LFS pointer or an HTML error page.");
+        }
+
+        currentSession = await ort.InferenceSession.create(buffer, { executionProviders: ['wasm'] });
+        console.log("Model loaded successfully:", modelFile);
         resetGame();
     } catch (e) {
         console.error(e);
-        alert(`Failed to load ${modelFile}`);
+        const msg = `Failed to load ${modelFile}\nError: ${e.message}\n\nTroubleshooting:\n1. Check if the URL ends with '/' if hosted in a folder.\n2. Ensure .onnx files are committed (not ignored).\n3. Check console for details.`;
+        alert(msg);
+        uiStatus.innerText = "Error Loading Model";
+        uiStatus.className = "status-bar mb-6 bg-red-100 text-red-600";
     } finally {
         uiLoading.classList.add('hidden');
     }
