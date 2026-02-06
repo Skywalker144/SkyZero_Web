@@ -106,6 +106,7 @@ body {
 .policy-heatmap-cell {
     background-color: #e2e8f0;
     position: relative;
+    overflow: hidden;
 }
 
 

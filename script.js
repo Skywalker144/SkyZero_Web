@@ -773,6 +773,7 @@ function updateAnalysis(winRate, counts) {
         const grid = document.createElement('div');
         grid.className = 'policy-heatmap-grid';
         grid.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+        grid.style.gridTemplateRows = `repeat(${size}, 1fr)`;
         
         // Calculate cell size to fit container, maintaining aspect ratio
         // Container has w-full min-h-[200px].
