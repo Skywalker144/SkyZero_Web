@@ -1,14 +1,25 @@
 // ==========================================
-// 0. MCTS Configuration (在这里修改参数)
+// 0. MCTS Configuration & Cache
 // ==========================================
 
-// Configure ONNX Runtime WASM paths to ensure version match
+// Configure ONNX Runtime WASM paths
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
 
-const MCTS_CONFIG = {
-    numSimulations: 400,  // MCTS 模拟次数 (建议: TTT=100, C4=400, Gomoku=800)
-    c_puct: 1.4,          // 探索系数
+// Session Cache to avoid reloading models
+const sessionCache = {
+    'ttt': null,
+    'c4': null,
+    'gomoku': null
 };
+
+// Config per game
+const GAME_CONFIG = {
+    'ttt': { sims: 200, c_puct: 1.0 },    // TTT is simple, fast is better
+    'c4': { sims: 800, c_puct: 1.4 },     // C4 needs decent depth
+    'gomoku': { sims: 1600, c_puct: 1.4 } // Gomoku 9x9 needs more search
+};
+
+let currentConfig = { numSimulations: 400, c_puct: 1.4 };
 
 // ==========================================
 // 1. Game Logic Engines (核心规则)
@@ -353,12 +364,18 @@ class MCTS {
         }
     }
 
-    async search(state, toPlay) {
-        const root = new Node(state, toPlay);
-        
-        // Time slicing to prevent UI freeze
-        for (let i = 0; i < this.args.numSimulations; i++) {
-            let node = root;
+    select(node) {
+        let bestScore = -Infinity;
+        let bestChild = null;
+        for (const child of node.children) {
+            const q = child.n > 0 ? -child.v / child.n : 0;
+            // Use dynamic c_puct from args (currentConfig)
+            const u = this.args.c_puct * child.prior * (Math.sqrt(node.n) / (1 + child.n));
+            const score = q + u;
+            if (score > bestScore) { bestScore = score; bestChild = child; }
+        }
+        return bestChild;
+    }
             
             // 1. Select
             while (node.isExpanded()) node = this.select(node);
@@ -379,8 +396,14 @@ class MCTS {
             this.backpropagate(node, value);
 
             // Yield to UI every 50 iterations
-            if (i % 50 === 0) await new Promise(r => setTimeout(r, 0));
+            if (i % 50 === 0) {
+                if (this.args.onProgress) this.args.onProgress(i, this.args.numSimulations);
+                await new Promise(r => setTimeout(r, 0));
+            }
         }
+
+        // Final progress update
+        if (this.args.onProgress) this.args.onProgress(this.args.numSimulations, this.args.numSimulations);
 
         // Return visit counts
         const counts = new Float32Array(this.game.actionSpace).fill(0);
@@ -449,9 +472,19 @@ async function switchGame(type) {
         uiBoardGomoku.classList.remove('hidden');
     }
 
-    // Load Model
+    // Load Model or Use Cache
+    currentConfig.numSimulations = GAME_CONFIG[type].sims;
+    currentConfig.c_puct = GAME_CONFIG[type].c_puct;
+
+    if (sessionCache[type]) {
+        console.log(`Using cached session for ${type}`);
+        currentSession = sessionCache[type];
+        resetGame();
+        return;
+    }
+
     uiLoading.classList.remove('hidden');
-    uiStatus.innerText = "Loading Model...";
+    uiStatus.innerText = "正在加载模型...";
     
     let modelFile = `${type === 'ttt' ? 'tictactoe' : (type === 'c4' ? 'connect4' : 'gomoku')}.onnx`;
     
@@ -459,7 +492,7 @@ async function switchGame(type) {
         // Explicitly fetch first to check status and provide better diagnostics
         const response = await fetch(modelFile);
         if (!response.ok) {
-            throw new Error(`Fetch failed: ${response.status} ${response.statusText} for ${modelFile}`);
+            throw new Error(`获取失败: ${response.status} ${response.statusText} for ${modelFile}`);
         }
         
         const contentType = response.headers.get('content-type');
@@ -467,17 +500,19 @@ async function switchGame(type) {
         
         const buffer = await response.arrayBuffer();
         if (buffer.byteLength < 1000) {
-             console.warn("Warning: Model file is remarkably small. This might be a Git LFS pointer or an HTML error page.");
+             console.warn("警告：模型文件过小。这可能是 Git LFS 指针或 HTML 错误页面。");
         }
 
         currentSession = await ort.InferenceSession.create(buffer, { executionProviders: ['wasm'] });
+        sessionCache[type] = currentSession; // Cache it!
+
         console.log("Model loaded successfully:", modelFile);
         resetGame();
     } catch (e) {
         console.error(e);
-        const msg = `Failed to load ${modelFile}\nError: ${e.message}\n\nTroubleshooting:\n1. Check if the URL ends with '/' if hosted in a folder.\n2. Ensure .onnx files are committed (not ignored).\n3. Check console for details.`;
+        const msg = `加载失败 ${modelFile}\n错误信息: ${e.message}\n\n故障排除:\n1. 如果托管在子文件夹中，请检查 URL 是否以 '/' 结尾。\n2. 确保 .onnx 文件已提交 (未被忽略)。\n3. 查看控制台获取详细信息。`;
         alert(msg);
-        uiStatus.innerText = "Error Loading Model";
+        uiStatus.innerText = "模型加载失败";
         uiStatus.className = "status-bar mb-6 bg-red-100 text-red-600";
     } finally {
         uiLoading.classList.add('hidden');
@@ -590,7 +625,14 @@ async function runAiMove() {
     const start = performance.now();
     
     // MCTS Search
-    const mcts = new MCTS(gameEngine, currentSession, MCTS_CONFIG);
+    const mcts = new MCTS(gameEngine, currentSession, {
+        ...currentConfig,
+        onProgress: (current, total) => {
+            const pct = Math.round((current / total) * 100);
+            uiStatus.innerText = `思考中... ${pct}%`;
+            // Optional: Update a visual progress bar if we had one in the status bar
+        }
+    });
     const result = await mcts.search(gameState, currentToPlay);
     
     const end = performance.now();
@@ -678,29 +720,29 @@ function drawBoard() {
 function updateStatus(winner = null) {
     if (winner !== null) {
         if (winner === 0) {
-            uiStatus.innerText = "平局 (Draw)";
+            uiStatus.innerText = "平局";
             uiStatus.className = "status-bar mb-6 bg-pink-100 text-pink-600";
         } else {
             const human = playerSide === 'first' ? 1 : -1;
             if (winner === human) {
-                uiStatus.innerText = "🎉 You Win!";
+                uiStatus.innerText = "🎉 你赢了!";
                 uiStatus.className = "status-bar mb-6 bg-red-100 text-red-600";
             } else {
-                uiStatus.innerText = "🤖 SkyZero Wins!";
+                uiStatus.innerText = "🤖 SkyZero 获胜!";
                 uiStatus.className = "status-bar mb-6 bg-green-100 text-green-600";
             }
         }
     } else {
         if (isAiThinking) {
-            uiStatus.innerText = "Thinking... (MCTS)";
+            uiStatus.innerText = "思考中... (MCTS)";
             uiStatus.className = "status-bar mb-6 bg-indigo-100 text-indigo-600";
         } else {
             const human = playerSide === 'first' ? 1 : -1;
             if (currentToPlay === human) {
-                uiStatus.innerText = "Your Turn";
+                uiStatus.innerText = "轮到你了";
                 uiStatus.className = "status-bar mb-6 bg-blue-100 text-blue-600";
             } else {
-                uiStatus.innerText = "Waiting...";
+                uiStatus.innerText = "等待中...";
                 uiStatus.className = "status-bar mb-6 bg-gray-100 text-gray-600";
             }
         }
@@ -719,7 +761,7 @@ function updateAnalysis(winRate, counts) {
     container.innerHTML = '';
     
     if (!counts) {
-        container.innerHTML = '<p class="text-gray-400 text-xs">Waiting for analysis...</p>';
+        container.innerHTML = '<p class="text-gray-400 text-xs">等待分析...</p>';
         return;
     }
 
